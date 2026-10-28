@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>巢湖流域 · 水循环探索</title>
+
+<!-- Leaflet 地图库 -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root { --map-size: 100%; }
+
+  /* ---------- 全局重置 ---------- */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0d1b2a;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body.dragging { user-select: none; cursor: col-resize; }
+  body.dragging iframe, body.dragging video { pointer-events: none; }
+
+  /* ---------- 左右分屏骨架（始终横向） ---------- */
+  #app {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    height: 100%;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  /* 左：地图 */
+  #mapPane {
+    flex: 0 0 var(--map-size);
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #map { width: 100%; height: 100%; background: #e8f0f8; }
+
+  /* 分隔条（始终水平拖动） */
+  #splitter {
+    display: none;
+    flex: 0 0 10px;
+    position: relative;
+    background: #eef3f8;
+    cursor: col-resize;
+    touch-action: none;
+    z-index: 500;
+    transition: background 0.2s;
+  }
+  #splitter::before {
+    content: '';
+    position: absolute;
+    inset: 0 -8px;   /* 扩大触摸热区 */
+  }
+  #splitter::after {
+    content: '';
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px; height: 44px;
+    border-radius: 3px;
+    background: #b6c8da;
+    transition: background 0.2s, height 0.2s;
+  }
+  #splitter:hover { background: #dfe9f3; }
+  #splitter:hover::after { background: #1a73e8; height: 58px; }
+  #app.open #splitter { display: block; }
+
+  /* 右：视频与图片 */
+  #contentPane {
+    display: none;
+    flex: 1 1 0;
+    min-width: 0;
+    flex-direction: column;
+    background: #fff;
+  }
+  #app.open #contentPane { display: flex; }
+
+  .content-header {
+    padding: 14px 18px;
+    background: #f7f9fc;
+    border-bottom: 1px solid #e8eef4;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-shrink: 0;
+  }
+  .content-title { min-width: 0; }
+  .content-title h2 {
+    font-size: 1.06rem; color: #1a3b5c; font-weight: 700; line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .content-title p {
+    font-size: 0.73rem; color: #78909c; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .close-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: #e8eef4; color: #5a7a99; font-size: 1rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: background 0.2s; flex-shrink: 0;
+  }
+  .close-btn:hover { background: #d0dce8; }
+
+  .content-body {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 16px 18px 24px;
+  }
+
+  /* ---------- 地图上的标题 ---------- */
+  .header {
+    position: absolute; top: 0; left: 0; right: 0;
+    z-index: 600;
+    padding: 14px 18px;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0));
+    pointer-events: none;
+  }
+  .header h1 {
+    font-size: 1.2rem; font-weight: 700; color: #1a3b5c; letter-spacing: 1px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .header h1 span { font-size: 0.76rem; font-weight: 400; color: #5a7a99; letter-spacing: 0; }
+  .header .sub { font-size: 0.74rem; color: #78909c; margin-top: 3px; }
+
+  /* 全流域按钮 */
+  .map-btn {
+    position: absolute;
+    right: 10px; bottom: 28px;
+    z-index: 600;
+    border: none;
+    background: rgba(255,255,255,0.96);
+    color: #1a3b5c;
+    padding: 8px 16px;
+    border-radius: 22px;
+    font-size: 0.8rem; font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 3px 14px rgba(0,0,0,0.16);
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+  .map-btn:hover { background: #1a73e8; color: #fff; }
+
+  /* ---------- 自定义标记点 ---------- */
+  .custom-marker {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(255,255,255,0.95);
+    border: 3px solid #1a73e8;
+    box-shadow: 0 0 0 6px rgba(26,115,232,0.18), 0 4px 12px rgba(0,0,0,0.2);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: transform 0.2s;
+    position: relative;
+  }
+  .custom-marker::after {
+    content: ''; width: 12px; height: 12px; background: #1a73e8; border-radius: 50%;
+  }
+  .custom-marker:hover { transform: scale(1.18); }
+  .custom-marker.active {
+    border-color: #ff6b35;
+    box-shadow: 0 0 0 8px rgba(255,107,53,0.22), 0 4px 14px rgba(0,0,0,0.25);
+  }
+  .custom-marker.active::after { background: #ff6b35; }
+  .custom-marker .pulse {
+    position: absolute; inset: -8px; border-radius: 50%;
+    border: 2px solid rgba(26,115,232,0.5);
+    animation: pulse 2s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { transform: scale(1);   opacity: 0.8; }
+    100% { transform: scale(1.8); opacity: 0; }
+  }
+  .marker-label {
+    position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+    background: rgba(26,59,92,0.88); color: #fff;
+    padding: 4px 12px; border-radius: 14px;
+    font-size: 0.78rem; font-weight: 600; white-space: nowrap;
+    pointer-events: none; backdrop-filter: blur(4px);
+  }
+
+  /* ---------- 视频 ---------- */
+  .video-wrap {
+    position: relative; width: 100%; aspect-ratio: 16 / 9;
+    background: #0d1b2a; border-radius: 14px; overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .video-wrap iframe, .video-wrap video {
+    position: absolute; inset: 0; width: 100%; height: 100%; border: none;
+  }
+  .video-placeholder {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #78909c; gap: 8px;
+    font-size: 0.85rem; text-align: center; padding: 16px;
+  }
+  .video-placeholder .icon { font-size: 2rem; opacity: 0.5; }
+
+  /* ---------- 图片网格 ---------- */
+  .image-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  .img-item {
+    aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden;
+    background: #e8eef4; cursor: pointer; position: relative;
+  }
+  .img-item img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    transition: transform 0.3s;
+  }
+  .img-item:hover img { transform: scale(1.06); }
+  .img-empty {
+    display: flex; align-items: center; justify-content: center;
+    color: #90a4ae; font-size: 0.75rem; text-align: center; padding: 10px;
+    aspect-ratio: 4 / 3; border-radius: 10px; background: #e8eef4;
+  }
+
+  /* ---------- 编辑区 ---------- */
+  .edit-tip {
+    margin-top: 18px; padding-top: 14px;
+    border-top: 1px dashed #d0dce8;
+    font-size: 0.74rem; color: #90a4ae; line-height: 1.6;
+  }
+  .edit-bar { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .btn-edit {
+    border: 1px solid #1a73e8; background: #fff; color: #1a73e8;
+    padding: 9px 16px; border-radius: 8px; font-size: 0.82rem; font-weight: 600;
+    cursor: pointer; transition: all 0.2s; white-space: nowrap;
+  }
+  .btn-edit:hover { background: #1a73e8; color: #fff; }
+  .btn-edit.secondary { border-color: #90a4ae; color: #5a7a99; }
+  .btn-edit.secondary:hover { background: #5a7a99; color: #fff; border-color: #5a7a99; }
+
+  /* ---------- 保存提示 ---------- */
+  .save-toast {
+    position: fixed; left: 50%; bottom: 26px;
+    transform: translateX(-50%) translateY(20px);
+    background: #1a3b5c; color: #fff; padding: 10px 22px; border-radius: 24px;
+    font-size: 0.82rem; z-index: 3000; opacity: 0; pointer-events: none;
+    transition: all 0.3s ease; box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+  }
+  .save-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* ---------- 移动端：仍是左右分屏，仅做紧凑化 ---------- */
+  @media (max-width: 768px) {
+    /* 标题压缩，避免在窄地图上撑开 */
+    .header { padding: 8px 10px; }
+    .header h1 { font-size: 0.82rem; gap: 3px; letter-spacing: 0; }
+    .header h1 span { display: none; }
+    .header .sub { display: none; }
+
+    #splitter { flex: 0 0 14px; }
+    #splitter::after { height: 34px; }
+
+    .content-header { padding: 9px 10px; gap: 6px; }
+    .content-title h2 { font-size: 0.88rem; }
+    .content-title p { font-size: 0.64rem; }
+    .close-btn { width: 28px; height: 28px; font-size: 0.9rem; }
+
+    .content-body { padding: 10px 10px 18px; }
+
+    .video-wrap { border-radius: 10px; margin-bottom: 10px; }
+
+    /* 窄屏下图片自动变小，保证每行仍有多张 */
+    .image-grid { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
+    .img-item { border-radius: 8px; }
+
+    .edit-tip { font-size: 0.66rem; margin-top: 12px; padding-top: 10px; }
+    .edit-bar { gap: 6px; margin-top: 8px; }
+    .btn-edit {
+      flex: 1 1 100%;
+      padding: 7px 8px;
+      font-size: 0.72rem;
+      text-align: center;
+    }
+
+    .map-btn { bottom: 22px; right: 8px; padding: 6px 10px; font-size: 0.7rem; }
+
+    /* 缩小 Leaflet 缩放控件，避免遮挡 */
+    .leaflet-control-zoom a { width: 26px !important; height: 26px !important; line-height: 26px !important; font-size: 14px !important; }
+  }
+
+  /* Leaflet 控件美化 */
+  .leaflet-control-zoom {
+    border: none !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15) !important;
+    border-radius: 10px !important; overflow: hidden;
+  }
+  .leaflet-control-zoom a { background: #fff !important; color: #1a3b5c !important; }
+  .leaflet-control-attribution {
+    font-size: 10px !important;
+    background: rgba(255,255,255,0.85) !important;
+    max-width: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <!-- 左：地图 -->
+  <div id="mapPane">
+    <div id="map"></div>
+    <div class="header">
+      <h1>巢湖流域 · 水循环探索 <span>点击标记查看详情</span></h1>
+      <div class="sub">董铺水库 · 十八联圩 · 巢湖</div>
+    </div>
+    <button class="map-btn" id="btnFit">全流域</button>
+  </div>
+
+  <!-- 水平分隔条 -->
+  <div id="splitter" role="separator" aria-label="拖动调整左右比例" title="拖动调整比例" tabindex="0"></div>
+
+  <!-- 右：视频与图片 -->
+  <div id="contentPane">
+    <div class="content-header">
+      <div class="content-title">
+        <h2 id="siteTitle">地点名称</h2>
+        <p id="siteSub"></p>
+      </div>
+      <button class="close-btn" onclick="closeSite()" aria-label="关闭面板">✕</button>
+    </div>
+    <div class="content-body" id="contentBody"></div>
+  </div>
+</div>
+
+<div class="save-toast" id="saveToast">✓ 已保存到本机浏览器</div>
+
+<script>
+/* ============================================================
+   ★★★ 默认数据区 ★★★
+   videoUrl 支持：
+     1) MP4 / WebM 直链，如 https://xxx.com/a.mp4
+     2) 视频平台嵌入地址，如 Bilibili：
+        //player.bilibili.com/player.html?bvid=BVxxxx
+     3) 也可直接粘贴完整 <iframe> 代码，程序会自动提取 src
+   images 为图片直链数组
+   ============================================================ */
+const DEFAULT_SITES = [
+  {
+    id: 'dongpu',
+    name: '董铺水库',
+    sub: '合肥水源地 · 南淝河上游',
+    lat: 31.8820,
+    lng: 117.2075,
+    videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
+    images: [
+      'https://picsum.photos/seed/dongpu1/800/600',
+      'https://picsum.photos/seed/dongpu2/800/600',
+      'https://picsum.photos/seed/dongpu3/800/600'
+    ]
+  },
+  {
+    id: 'shibalianwei',
+    name: '十八联圩',
+    sub: '南淝河入湖口 · 生态湿地蓄洪区',
+    lat: 31.7120,
+    lng: 117.4350,
+    videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
+    images: [
+      'https://picsum.photos/seed/shiba1/800/600',
+      'https://picsum.photos/seed/shiba2/800/600',
+      'https://picsum.photos/seed/shiba3/800/600'
+    ]
+  },
+  {
+    id: 'chaohu',
+    name: '巢湖',
+    sub: '中国五大淡水湖之一',
+    lat: 31.5600,
+    lng: 117.5600,
+    videoUrl: 'https://www.w3schools.com/html/mov_bbb.mp4',
+    images: [
+      'https://picsum.photos/seed/chaohu1/800/600',
+      'https://picsum.photos/seed/chaohu2/800/600',
+      'https://picsum.photos/seed/chaohu3/800/600'
+    ]
+  }
+];
+
+/* ============================================================
+   本地存储：编辑内容刷新后保留
+   ============================================================ */
+const STORAGE_KEY = 'chaohu-sites-v1';
+const clone = obj => JSON.parse(JSON.stringify(obj));
+
+function loadSites() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (Array.isArray(saved)) {
+        return DEFAULT_SITES.map(d => {
+          const s = saved.find(x => x && x.id === d.id);
+          if (!s) return clone(d);
+          return {
+            ...d,
+            videoUrl: typeof s.videoUrl === 'string' ? s.videoUrl : d.videoUrl,
+            images: Array.isArray(s.images) ? s.images : d.images
+          };
+        });
+      }
+    }
+  } catch (e) { /* 忽略解析错误 */ }
+  return clone(DEFAULT_SITES);
+}
+
+function saveSites() {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(SITES));
+    showToast();
+  } catch (e) { /* 隐私模式等静默失败 */ }
+}
+
+let SITES = loadSites();
+
+/* ============================================================
+   地图初始化（仅地形底图）
+   ============================================================ */
+const map = L.map('map', {
+  center: [31.72, 117.40],
+  zoom: 10,
+  zoomControl: false,
+  attributionControl: true
+});
+
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+  {
+    maxZoom: 19,
+    attribution: '地形底图 &copy; Esri, HERE, Garmin, FAO, NOAA, USGS'
+  }
+).addTo(map);
+
+/* ============================================================
+   标记点
+   ============================================================ */
+const markers = [];
+
+SITES.forEach(site => {
+  const icon = L.divIcon({
+    className: '',
+    html: `
+      <div class="custom-marker">
+        <div class="pulse"></div>
+      </div>
+      <div class="marker-label">${escapeHtml(site.name)}</div>
+    `,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17]
+  });
+
+  const marker = L.marker([site.lat, site.lng], { icon }).addTo(map);
+  marker.siteId = site.id;
+  marker.on('click', () => openSite(site.id));
+  markers.push(marker);
+});
+
+const allBounds = L.latLngBounds(SITES.map(s => [s.lat, s.lng]));
+map.fitBounds(allBounds, { padding: [70, 70] });
+
+document.getElementById('btnFit').addEventListener('click', () => {
+  map.fitBounds(allBounds, { padding: [70, 70] });
+});
+
+/* ============================================================
+   左右分屏逻辑（始终水平拖动）
+   ============================================================ */
+const appEl = document.getElementById('app');
+const splitter = document.getElementById('splitter');
+let activeSiteId = null;
+let hasOpenedOnce = false;
+let currentRatio = 0.55;
+
+const isSmallScreen = () => window.matchMedia('(max-width: 768px)').matches;
+const defaultRatio = () => (isSmallScreen() ? 0.5 : 0.55);
+
+let rafPending = false;
+function setRatio(r) {
+  currentRatio = r;
+  document.documentElement.style.setProperty('--map-size', (r * 100).toFixed(2) + '%');
+  if (!rafPending) {
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      map.invalidateSize({ animate: false });
+    });
+  }
+}
+
+/* ---------- 打开地点 ---------- */
+function openSite(siteId) {
+  const site = SITES.find(s => s.id === siteId);
+  if (!site) return;
+  activeSiteId = siteId;
+
+  document.getElementById('siteTitle').textContent = site.name;
+  document.getElementById('siteSub').textContent = site.sub || '';
+  renderContent(site);
+
+  if (!hasOpenedOnce) {
+    hasOpenedOnce = true;
+    setRatio(defaultRatio());
+  }
+  appEl.classList.add('open');
+
+  highlightMarker(siteId);
+
+  setTimeout(() => {
+    map.invalidateSize({ animate: false });
+    map.setView([site.lat, site.lng], Math.max(map.getZoom(), 12), { animate: true });
+  }, 90);
+}
+
+/* ---------- 关闭面板 ---------- */
+function closeSite() {
+  appEl.classList.remove('open');
+  activeSiteId = null;
+  highlightMarker(null);
+
+  setTimeout(() => {
+    map.invalidateSize({ animate: false });
+    map.fitBounds(allBounds, { padding: [70, 70] });
+  }, 60);
+}
+window.closeSite = closeSite;
+
+/* ---------- 标记高亮 ---------- */
+function highlightMarker(siteId) {
+  markers.forEach(m => {
+    const el = m.getElement();
+    if (!el) return;
+    const dot = el.querySelector('.custom-marker');
+    if (dot) dot.classList.toggle('active', m.siteId === siteId);
+  });
+}
+
+/* ============================================================
+   内容面板渲染
+   ============================================================ */
+function renderContent(site) {
+  document.getElementById('contentBody').innerHTML = `
+    <div class="video-wrap" id="videoWrap">
+      ${renderVideo(site.videoUrl)}
+    </div>
+
+    <div class="image-grid" id="imageGrid">
+      ${renderImages(site.images)}
+    </div>
+
+    <div class="edit-tip">
+      提示：点击下方按钮即可更换视频和图片，修改会立即生效并自动保存到本机浏览器，刷新页面后仍然保留。
+    </div>
+    <div class="edit-bar">
+      <button class="btn-edit" onclick="editVideo()">🎬 更换视频</button>
+      <button class="btn-edit" onclick="editImage()">🖼 更换图片</button>
+      <button class="btn-edit secondary" onclick="resetSite()">↺ 恢复默认</button>
+    </div>
+  `;
+}
+
+function renderVideo(url) {
+  if (!url || !url.trim()) {
+    return `<div class="video-placeholder">
+              <div class="icon">▶</div>
+              <span>暂无视频<br>点击下方“更换视频”添加</span>
+            </div>`;
+  }
+  const src = extractSrc(url);
+  const isEmbed = /bilibili\.com|youtube\.com|youtu\.be|player\.|v\.qq\.com|tv\.cctv\.com|ixigua\.com|youku\.com|vimeo\.com/i.test(src);
+  if (isEmbed) {
+    return `<iframe src="${escapeAttr(src)}" allowfullscreen
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              referrerpolicy="no-referrer"></iframe>`;
+  }
+  return `<video controls playsinline preload="metadata" src="${escapeAttr(src)}"></video>`;
+}
+
+function renderImages(images) {
+  if (!images || !images.length) {
+    return `<div class="img-empty">暂无图片</div>`;
+  }
+  return images.map((raw, i) => {
+    const src = extractSrc(raw);
+    return `
+      <div class="img-item" onclick="window.open('${escapeAttr(src)}', '_blank')">
+        <img src="${escapeAttr(src)}" alt="图片 ${i + 1}" loading="lazy"
+             onerror="this.parentElement.outerHTML='<div class=&quot;img-empty&quot;>图片加载失败</div>'">
+      </div>`;
+  }).join('');
+}
+
+/* ============================================================
+   编辑功能
+   ============================================================ */
+function getActiveSite() {
+  return SITES.find(s => s.id === activeSiteId);
+}
+
+window.editVideo = function () {
+  const site = getActiveSite();
+  if (!site) return;
+
+  const input = prompt(
+    '请输入视频地址，留空表示移除视频：\n\n' +
+    '· MP4 直链：https://xxx.com/xxx.mp4\n' +
+    '· 平台嵌入地址：//player.bilibili.com/player.html?bvid=BVxxxx\n' +
+    '· 也可直接粘贴完整的 <iframe> 代码',
+    site.videoUrl || ''
+  );
+  if (input === null) return;
+
+  site.videoUrl = input.trim();
+  saveSites();
+
+  const wrap = document.getElementById('videoWrap');
+  if (wrap) wrap.innerHTML = renderVideo(site.videoUrl);
+};
+
+window.editImage = function () {
+  const site = getActiveSite();
+  if (!site) return;
+
+  const input = prompt(
+    '请输入图片地址，每行一个（可一次输入多张），留空表示移除全部图片：',
+    site.images.join('\n')
+  );
+  if (input === null) return;
+
+  site.images = input.split('\n').map(s => s.trim()).filter(Boolean);
+  saveSites();
+
+  const grid = document.getElementById('imageGrid');
+  if (grid) grid.innerHTML = renderImages(site.images);
+};
+
+window.resetSite = function () {
+  const site = getActiveSite();
+  if (!site) return;
+  if (!confirm('确定恢复该地点的默认视频和图片吗？本次修改将被覆盖。')) return;
+
+  const def = DEFAULT_SITES.find(d => d.id === site.id);
+  site.videoUrl = def.videoUrl;
+  site.images = clone(def.images);
+  saveSites();
+  renderContent(site);
+};
+
+/* ============================================================
+   分隔条拖动（仅水平方向）
+   ============================================================ */
+let dragging = false;
+
+splitter.addEventListener('pointerdown', e => {
+  dragging = true;
+  document.body.classList.add('dragging');
+  try { splitter.setPointerCapture(e.pointerId); } catch (_) {}
+  e.preventDefault();
+});
+
+splitter.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const rect = appEl.getBoundingClientRect();
+  let ratio = (e.clientX - rect.left) / rect.width;
+  ratio = Math.max(0.2, Math.min(0.8, ratio));
+  setRatio(ratio);
+});
+
+function endDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  document.body.classList.remove('dragging');
+  try { splitter.releasePointerCapture(e.pointerId); } catch (_) {}
+  map.invalidateSize({ animate: false });
+}
+splitter.addEventListener('pointerup', endDrag);
+splitter.addEventListener('pointercancel', endDrag);
+
+/* 键盘可访问性：左右方向键微调 */
+splitter.addEventListener('keydown', e => {
+  const step = 0.03;
+  if (e.key === 'ArrowLeft') {
+    setRatio(Math.max(0.2, currentRatio - step));
+    e.preventDefault();
+  } else if (e.key === 'ArrowRight') {
+    setRatio(Math.min(0.8, currentRatio + step));
+    e.preventDefault();
+  }
+});
+
+/* ============================================================
+   窗口尺寸变化
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => map.invalidateSize({ animate: false }), 150);
+});
+window.addEventListener('orientationchange', () => {
+  setTimeout(() => map.invalidateSize({ animate: false }), 300);
+});
+
+/* ============================================================
+   工具函数
+   ============================================================ */
+function extractSrc(input) {
+  const t = String(input || '').trim();
+  if (!t) return '';
+  const m = t.match(/src\s*=\s*["']([^"']+)["']/i);
+  return m ? m[1].trim() : t;
+}
+
+function escapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+function escapeAttr(str) { return escapeHtml(str); }
+
+let toastTimer = null;
+function showToast() {
+  const el = document.getElementById('saveToast');
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+}
+</script>
+</body>
+</html>
