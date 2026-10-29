@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>巢湖流域 · 水循环探索</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+  :root { --map-size: 100%; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0d1b2a;
+  }
+  body.dragging { user-select: none; cursor: col-resize; }
+  body.dragging iframe, body.dragging video { pointer-events: none; }
+
+  #app {
+    display: flex; flex-direction: row;
+    width: 100%; height: 100%; height: 100dvh; overflow: hidden;
+  }
+  #mapPane {
+    flex: 0 0 var(--map-size);
+    position: relative; min-width: 0; overflow: hidden;
+  }
+  #map { width: 100%; height: 100%; background: #e8f0f8; }
+
+  #splitter {
+    display: none; flex: 0 0 10px; position: relative;
+    background: #eef3f8; cursor: col-resize; touch-action: none;
+    z-index: 500; transition: background 0.2s;
+  }
+  #splitter::before { content: ''; position: absolute; inset: 0 -8px; }
+  #splitter::after {
+    content: ''; position: absolute; top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 3px; height: 44px; border-radius: 3px;
+    background: #b6c8da; transition: background 0.2s, height 0.2s;
+  }
+  #splitter:hover { background: #dfe9f3; }
+  #splitter:hover::after { background: #1a73e8; height: 58px; }
+  #app.open #splitter { display: block; }
+
+  #contentPane {
+    display: none; flex: 1 1 0; min-width: 0;
+    flex-direction: column; background: #fff;
+  }
+  #app.open #contentPane { display: flex; }
+
+  .content-header {
+    padding: 14px 18px; background: #f7f9fc;
+    border-bottom: 1px solid #e8eef4;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; flex-shrink: 0;
+  }
+  .content-title { min-width: 0; }
+  .content-title h2 {
+    font-size: 1.06rem; color: #1a3b5c; font-weight: 700; line-height: 1.3;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .content-title p {
+    font-size: 0.73rem; color: #78909c; margin-top: 2px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .close-btn {
+    width: 32px; height: 32px; border-radius: 50%; border: none;
+    background: #e8eef4; color: #5a7a99; font-size: 1rem;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .close-btn:hover { background: #d0dce8; }
+
+  .content-body {
+    flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch;
+    padding: 16px 18px 24px;
+  }
+
+  .header {
+    position: absolute; top: 0; left: 0; right: 0; z-index: 600;
+    padding: 14px 18px;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.95), rgba(255,255,255,0));
+    pointer-events: none;
+  }
+  .header h1 {
+    font-size: 1.2rem; font-weight: 700; color: #1a3b5c; letter-spacing: 1px;
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .header h1 span { font-size: 0.76rem; font-weight: 400; color: #5a7a99; letter-spacing: 0; }
+  .header .sub { font-size: 0.74rem; color: #78909c; margin-top: 3px; }
+
+  .map-btn {
+    position: absolute; right: 10px; bottom: 28px; z-index: 600;
+    border: none; background: rgba(255,255,255,0.96); color: #1a3b5c;
+    padding: 8px 16px; border-radius: 22px;
+    font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    box-shadow: 0 3px 14px rgba(0,0,0,0.16); white-space: nowrap;
+  }
+  .map-btn:hover { background: #1a73e8; color: #fff; }
+
+  .custom-marker {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: rgba(255,255,255,0.95);
+    border: 3px solid #1a73e8;
+    box-shadow: 0 0 0 6px rgba(26,115,232,0.18), 0 4px 12px rgba(0,0,0,0.2);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: transform 0.2s; position: relative;
+  }
+  .custom-marker::after {
+    content: ''; width: 12px; height: 12px; background: #1a73e8; border-radius: 50%;
+  }
+  .custom-marker:hover { transform: scale(1.18); }
+  .custom-marker.active {
+    border-color: #ff6b35;
+    box-shadow: 0 0 0 8px rgba(255,107,53,0.22), 0 4px 14px rgba(0,0,0,0.25);
+  }
+  .custom-marker.active::after { background: #ff6b35; }
+  .custom-marker .pulse {
+    position: absolute; inset: -8px; border-radius: 50%;
+    border: 2px solid rgba(26,115,232,0.5);
+    animation: pulse 2s ease-out infinite;
+  }
+  @keyframes pulse {
+    0%   { transform: scale(1);   opacity: 0.8; }
+    100% { transform: scale(1.8); opacity: 0; }
+  }
+  .marker-label {
+    position: absolute; top: 40px; left: 50%; transform: translateX(-50%);
+    background: rgba(26,59,92,0.88); color: #fff;
+    padding: 4px 12px; border-radius: 14px;
+    font-size: 0.78rem; font-weight: 600; white-space: nowrap;
+    pointer-events: none; backdrop-filter: blur(4px);
+  }
+
+  .video-wrap {
+    position: relative; width: 100%; aspect-ratio: 16 / 9;
+    background: #0d1b2a; border-radius: 14px; overflow: hidden;
+    margin-bottom: 16px;
+  }
+  .video-wrap video {
+    position: absolute; inset: 0; width: 100%; height: 100%; border: none;
+  }
+  .video-placeholder {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: #78909c; gap: 8px;
+    font-size: 0.85rem; text-align: center; padding: 16px; line-height: 1.7;
+  }
+  .video-placeholder .icon { font-size: 2rem; opacity: 0.5; }
+
+  .image-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+    gap: 10px;
+  }
+  .img-item {
+    aspect-ratio: 4 / 3; border-radius: 10px; overflow: hidden;
+    background: #e8eef4; cursor: pointer;
+  }
+  .img-item img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+    transition: transform 0.3s;
+  }
+  .img-item:hover img { transform: scale(1.06); }
+  .img-empty {
+    display: flex; align-items: center; justify-content: center;
+    color: #90a4ae; font-size: 0.75rem;
+    aspect-ratio: 4 / 3; border-radius: 10px; background: #e8eef4;
+  }
+
+  @media (max-width: 768px) {
+    .header { padding: 8px 10px; }
+    .header h1 { font-size: 0.82rem; gap: 3px; }
+    .header h1 span, .header .sub { display: none; }
+    #splitter { flex: 0 0 14px; }
+    #splitter::after { height: 34px; }
+    .content-header { padding: 9px 10px; gap: 6px; }
+    .content-title h2 { font-size: 0.88rem; }
+    .content-title p { font-size: 0.64rem; }
+    .close-btn { width: 28px; height: 28px; font-size: 0.9rem; }
+    .content-body { padding: 10px 10px 18px; }
+    .video-wrap { border-radius: 10px; margin-bottom: 10px; }
+    .image-grid { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); gap: 6px; }
+    .map-btn { bottom: 22px; right: 8px; padding: 6px 10px; font-size: 0.7rem; }
+    .leaflet-control-zoom a {
+      width: 26px !important; height: 26px !important;
+      line-height: 26px !important; font-size: 14px !important;
+    }
+  }
+
+  .leaflet-control-zoom {
+    border: none !important;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.15) !important;
+    border-radius: 10px !important; overflow: hidden;
+  }
+  .leaflet-control-zoom a { background: #fff !important; color: #1a3b5c !important; }
+  .leaflet-control-attribution {
+    font-size: 10px !important;
+    background: rgba(255,255,255,0.85) !important;
+    max-width: 100%;
+  }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <div id="mapPane">
+    <div id="map"></div>
+    <div class="header">
+      <h1>巢湖流域 · 水循环探索 <span>点击标记查看详情</span></h1>
+      <div class="sub">董铺水库 · 十八联圩 · 巢湖</div>
+    </div>
+    <button class="map-btn" id="btnFit">🗺 全流域</button>
+  </div>
+
+  <div id="splitter" role="separator" aria-label="拖动调整左右比例" title="拖动调整比例" tabindex="0"></div>
+
+  <div id="contentPane">
+    <div class="content-header">
+      <div class="content-title">
+        <h2 id="siteTitle">地点名称</h2>
+        <p id="siteSub"></p>
+      </div>
+      <button class="close-btn" onclick="closeSite()" aria-label="关闭面板">✕</button>
+    </div>
+    <div class="content-body" id="contentBody"></div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   ★★★ 直接在这里写视频和图片地址 ★★★
+   ============================================================
+   videoUrl 用相对路径，指向与 HTML 同一目录的视频文件。
+   例如仓库根目录下有：
+       index.html
+       水库.mp4
+       十八联圩.mp4
+       巢湖.mp4
+   那么下面三个地址就是正确的。
+
+   如果视频放在子文件夹，比如 videos/ 目录下：
+       videoUrl: './videos/水库.mp4'
+
+   ⚠ GitHub Pages 限制：
+   · 单个文件超过 100MB 无法放普通仓库
+   · 不支持 Git LFS
+   如果视频较大，请先压缩到 100MB 以内再上传。
+   ============================================================ */
+const SITES = [
+  {
+    id: 'dongpu',
+    name: '董铺水库',
+    sub: '合肥水源地 · 南淝河上游',
+    lat: 31.8820,
+    lng: 117.2075,
+    videoUrl: './水库.mp4',          // ← 改成实际文件名（含扩展名）
+    images: [
+      'https://picsum.photos/seed/dongpu1/800/600',
+      'https://picsum.photos/seed/dongpu2/800/600',
+      'https://picsum.photos/seed/dongpu3/800/600'
+    ]
+  },
+  {
+    id: 'shibalianwei',
+    name: '十八联圩',
+    sub: '南淝河入湖口 · 生态湿地蓄洪区',
+    lat: 31.7120,
+    lng: 117.4350,
+    videoUrl: './十八联圩.mp4',      // ← 改成实际文件名（含扩展名）
+    images: [
+      'https://picsum.photos/seed/shiba1/800/600',
+      'https://picsum.photos/seed/shiba2/800/600',
+      'https://picsum.photos/seed/shiba3/800/600'
+    ]
+  },
+  {
+    id: 'chaohu',
+    name: '巢湖',
+    sub: '中国五大淡水湖之一',
+    lat: 31.5600,
+    lng: 117.5600,
+    videoUrl: './巢湖.mp4',          // ← 改成实际文件名（含扩展名）
+    images: [
+      'https://picsum.photos/seed/chaohu1/800/600',
+      'https://picsum.photos/seed/chaohu2/800/600',
+      'https://picsum.photos/seed/chaohu3/800/600'
+    ]
+  }
+];
+
+/* ============================================================
+   工具
+   ============================================================ */
+function escapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[c]));
+}
+function escapeAttr(str) { return escapeHtml(str); }
+
+/* ============================================================
+   地图（仅地形底图）
+   ============================================================ */
+const map = L.map('map', {
+  center: [31.72, 117.40], zoom: 10,
+  zoomControl: false, attributionControl: true
+});
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+L.tileLayer(
+  'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, attribution: '地形底图 &copy; Esri, HERE, Garmin, FAO, NOAA, USGS' }
+).addTo(map);
+
+/* ---- 标记点 ---- */
+const markers = [];
+SITES.forEach(site => {
+  const icon = L.divIcon({
+    className: '',
+    html: `<div class="custom-marker"><div class="pulse"></div></div>
+           <div class="marker-label">${escapeHtml(site.name)}</div>`,
+    iconSize: [34, 34], iconAnchor: [17, 17]
+  });
+  const marker = L.marker([site.lat, site.lng], { icon }).addTo(map);
+  marker.siteId = site.id;
+  marker.on('click', () => openSite(site.id));
+  markers.push(marker);
+});
+
+const allBounds = L.latLngBounds(SITES.map(s => [s.lat, s.lng]));
+map.fitBounds(allBounds, { padding: [70, 70] });
+
+document.getElementById('btnFit').addEventListener('click', () => {
+  map.fitBounds(allBounds, { padding: [70, 70] });
+});
+
+/* ============================================================
+   左右分屏
+   ============================================================ */
+const appEl = document.getElementById('app');
+const splitter = document.getElementById('splitter');
+let activeSiteId = null;
+let hasOpenedOnce = false;
+let currentRatio = 0.55;
+
+const isSmallScreen = () => window.matchMedia('(max-width: 768px)').matches;
+const defaultRatio = () => (isSmallScreen() ? 0.5 : 0.55);
+
+let rafPending = false;
+function setRatio(r) {
+  currentRatio = r;
+  document.documentElement.style.setProperty('--map-size', (r * 100).toFixed(2) + '%');
+  if (!rafPending) {
+    rafPending = true;
+    requestAnimationFrame(() => {
+      rafPending = false;
+      map.invalidateSize({ animate: false });
+    });
+  }
+}
+
+function openSite(siteId) {
+  const site = SITES.find(s => s.id === siteId);
+  if (!site) return;
+  activeSiteId = siteId;
+
+  document.getElementById('siteTitle').textContent = site.name;
+  document.getElementById('siteSub').textContent = site.sub || '';
+  renderContent(site);
+
+  if (!hasOpenedOnce) { hasOpenedOnce = true; setRatio(defaultRatio()); }
+  appEl.classList.add('open');
+  highlightMarker(siteId);
+
+  setTimeout(() => {
+    map.invalidateSize({ animate: false });
+    map.setView([site.lat, site.lng], Math.max(map.getZoom(), 12), { animate: true });
+  }, 90);
+}
+
+function closeSite() {
+  appEl.classList.remove('open');
+  activeSiteId = null;
+  highlightMarker(null);
+  setTimeout(() => {
+    map.invalidateSize({ animate: false });
+    map.fitBounds(allBounds, { padding: [70, 70] });
+  }, 60);
+}
+window.closeSite = closeSite;
+
+function highlightMarker(siteId) {
+  markers.forEach(m => {
+    const el = m.getElement();
+    if (!el) return;
+    const dot = el.querySelector('.custom-marker');
+    if (dot) dot.classList.toggle('active', m.siteId === siteId);
+  });
+}
+
+/* ============================================================
+   渲染内容
+   ============================================================ */
+function renderContent(site) {
+  document.getElementById('contentBody').innerHTML = `
+    <div class="video-wrap" id="videoWrap">${renderVideo(site.videoUrl)}</div>
+    <div class="image-grid">${renderImages(site.images)}</div>
+  `;
+}
+
+function renderVideo(url) {
+  const src = String(url || '').trim();
+  if (!src) {
+    return `<div class="video-placeholder">
+              <div class="icon">▶</div>
+              <span>暂无视频</span>
+            </div>`;
+  }
+  // 统一用 <video> 标签；相对路径 / 网络直链都可以
+  return `<video controls playsinline preload="metadata"
+            src="${escapeAttr(src)}"
+            onerror="videoLoadError(this)"></video>`;
+}
+
+window.videoLoadError = function (el) {
+  const wrap = el.parentElement;
+  if (!wrap) return;
+  wrap.innerHTML = `
+    <div class="video-placeholder">
+      <div class="icon">▶</div>
+      <span>视频加载失败<br><br>
+      请检查：<br>
+      · 视频文件是否与 HTML 在同一个仓库目录<br>
+      · 文件名（含扩展名）是否与代码里完全一致<br>
+      · 视频是否超过 GitHub 100MB 单文件限制<br>
+      · 视频格式是否为浏览器支持的 MP4（H.264）</span>
+    </div>`;
+};
+
+function renderImages(images) {
+  if (!images || !images.length) return `<div class="img-empty">暂无图片</div>`;
+  return images.map((raw, i) => {
+    const src = String(raw || '').trim();
+    if (!src) return '';
+    return `<div class="img-item" onclick="window.open('${escapeAttr(src)}', '_blank')">
+        <img src="${escapeAttr(src)}" alt="图片 ${i + 1}" loading="lazy"
+             onerror="this.parentElement.outerHTML='<div class=&quot;img-empty&quot;>图片加载失败</div>'">
+      </div>`;
+  }).join('');
+}
+
+/* ============================================================
+   分隔条拖动
+   ============================================================ */
+let dragging = false;
+
+splitter.addEventListener('pointerdown', e => {
+  dragging = true;
+  document.body.classList.add('dragging');
+  try { splitter.setPointerCapture(e.pointerId); } catch (_) {}
+  e.preventDefault();
+});
+
+splitter.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const rect = appEl.getBoundingClientRect();
+  let ratio = (e.clientX - rect.left) / rect.width;
+  ratio = Math.max(0.2, Math.min(0.8, ratio));
+  setRatio(ratio);
+});
+
+function endDrag(e) {
+  if (!dragging) return;
+  dragging = false;
+  document.body.classList.remove('dragging');
+  try { splitter.releasePointerCapture(e.pointerId); } catch (_) {}
+  map.invalidateSize({ animate: false });
+}
+splitter.addEventListener('pointerup', endDrag);
+splitter.addEventListener('pointercancel', endDrag);
+
+splitter.addEventListener('keydown', e => {
+  const step = 0.03;
+  if (e.key === 'ArrowLeft') { setRatio(Math.max(0.2, currentRatio - step)); e.preventDefault(); }
+  else if (e.key === 'ArrowRight') { setRatio(Math.min(0.8, currentRatio + step)); e.preventDefault(); }
+});
+
+/* ============================================================
+   窗口尺寸
+   ============================================================ */
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => map.invalidateSize({ animate: false }), 150);
+});
+window.addEventListener('orientationchange', () => {
+  setTimeout(() => map.invalidateSize({ animate: false }), 300);
+});
+</script>
+</body>
+</html>
